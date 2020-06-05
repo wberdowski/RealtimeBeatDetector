@@ -59,7 +59,7 @@
             this.MaximizeBox = false;
             this.Name = "FormMain";
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
-            this.Text = "FormMain";
+            this.Text = "Realtime Beat Detector";
             this.ResumeLayout(false);
 
         }
