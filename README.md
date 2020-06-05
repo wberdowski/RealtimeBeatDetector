@@ -1,5 +1,8 @@
 # Realtime Beat Detector
-![screenshot](https://i.imgur.com/Iv8u6oG.png)
+
+<p align="center">
+  <img src="https://i.imgur.com/Iv8u6oG.png">
+</p>
 
 Realtime Beat Detector is a WinForms application that uses simple sound energy based beat detection algorithm.
 Audio input is provided by the WASAPI loopback capture interface included in the [CsCore](https://github.com/filoe/cscore) library.
