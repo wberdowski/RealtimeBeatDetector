@@ -1,134 +1,136 @@
 ﻿using System;
-using System.Collections.Generic;
 
 namespace RealtimeBeatDetector
 {
     public class BeatDetector
     {
-        public int EnergyBufferLength { get; set; } = 120; // 30
-        public int BpmBufferLength { get; set; } = 4; // 4
-        public int BeatMinSpacingMillis { get; set; } = 300; // 300
-        public double MinBeatThreshold { get; set; } = 10; // 40
-        public double Peak { get; set; }
-        public readonly List<double> energyBuffer = new List<double>();
-        public readonly List<double> bpmBuffer = new List<double>();
         public event EventHandler BeatDetected;
         public event EventHandler<BpmEventArgs> BpmDetected;
+
+        public const int EnergyBuffLen = 100;
+        public const int AvgWindowWidth = 40;
+        public const int BeatMinSpacingMillis = 400;
+
+        public BufferList<float> energyBuffer = new BufferList<float>(EnergyBuffLen);
+        public BufferList<float> bpmBuffer = new BufferList<float>(4);
+        public float[] localAvgBuffer = new float[EnergyBuffLen];
+        public float[] localDiffBuffer = new float[EnergyBuffLen];
+
         private DateTime lastBeat = DateTime.Now;
 
-        public BeatDetector()
-        {
-
-        }
-
-        public BeatDetector(int energyBufferLength = 120, int bpmBufferLength = 4, int beatMinSpacingMillis = 300, double minBeatThreshold = 10)
-        {
-            EnergyBufferLength = energyBufferLength;
-            BpmBufferLength = bpmBufferLength;
-            BeatMinSpacingMillis = beatMinSpacingMillis;
-            MinBeatThreshold = minBeatThreshold;
-        }
+        public float BeatThreshold { get; set; } = 300;
 
         public void ProcessBuffer(byte[] buffer, int length)
         {
-            double energy = 0;
-            float[] samples = new float[length / sizeof(float)];
-            Buffer.BlockCopy(buffer, 0, samples, 0, length);
+            float[] samples = PCMUtils.PCM32ToSamples(buffer, length);
+            float energy = 0;
 
-            for (int i = 0; i < samples.Length; i += 2)
+            for (int i = 0; i < samples.Length; i++)
             {
-                double s = MergeSamples(samples, i, 2);
-
-                if (s > Peak)
-                {
-                    Peak = s;
-                }
-
-                energy += Math.Pow(s, 2);
+                float s = samples[i];
+                energy += s * s;
             }
 
-            DetectBeat(energy);
-        }
+            energyBuffer.Add(energy);
 
-        private void DetectBeat(double energy)
-        {
-            double avgBufferEnergy = 0;
-
-            bool isMax = true;
-            int count = 0;
-            Peak = 0;
-
-            for (int i = 0; i < energyBuffer.Count; i++)
+            if (energyBuffer.Count == EnergyBuffLen)
             {
-                if (i < EnergyBufferLength / 4)
-                {
-                    if (energyBuffer[i] > energy)
-                    {
-                        isMax = false;
-                    }
-
-                    avgBufferEnergy += energyBuffer[i];
-                    count++;
-                }
-
-                if (energyBuffer[i] > Peak)
-                {
-                    Peak = energyBuffer[i];
-                }
-            }
-
-            avgBufferEnergy /= count;
-
-            double BeatThreshold = Math.Max(MinBeatThreshold, Peak * 0.40f);/*Math.Max(MinBeatThreshold, avgBufferEnergy * 1.75f);*/
-
-            if (isMax)
-            {
-                if (energy > BeatThreshold)
-                {
-                    DateTime now = DateTime.Now;
-                    double millis = now.Subtract(lastBeat).TotalMilliseconds;
-                    if (millis > BeatMinSpacingMillis)
-                    {
-                        BeatDetected?.Invoke(this, null);
-
-                        double bpm = 60 / millis * 1000;
-                        double avgBpm = 0;
-
-                        bpmBuffer.Insert(0, bpm);
-                        if (bpmBuffer.Count > BpmBufferLength)
-                        {
-                            bpmBuffer.RemoveAt(bpmBuffer.Count - 1);
-                        }
-
-                        for (int i = 0; i < bpmBuffer.Count; i++)
-                        {
-                            avgBpm += bpmBuffer[i];
-                        }
-
-                        avgBpm /= bpmBuffer.Count;
-
-                        BpmDetected?.Invoke(this, new BpmEventArgs(bpm, avgBpm));
-
-                        lastBeat = now;
-                    }
-                }
-            }
-
-            energyBuffer.Insert(0, energy);
-            if (energyBuffer.Count > EnergyBufferLength)
-            {
-                energyBuffer.RemoveAt(energyBuffer.Count - 1);
+                ComputeLocalDiff();
             }
         }
 
-        private float MergeSamples(float[] samples, int index, int channelCount)
+        private void ComputeLocalDiff()
         {
-            float z = 0f;
-            for (int i = 0; i < channelCount; i++)
+            float max = 0;
+
+            for (int i = 0; i < EnergyBuffLen - AvgWindowWidth; i++)
             {
-                z += samples[index + i];
+                float avg = GetAveragePastEnergy(i, AvgWindowWidth);
+                float avg2 = GetAveragePastEnergy(i, 3);
+                float diff = Math.Max(0, avg2 - avg);
+
+                if (diff > max)
+                {
+                    max = diff;
+                }
+
+                localAvgBuffer[i] = avg;
+                localDiffBuffer[i] = diff;
             }
-            return z / channelCount;
+
+
+            if (localDiffBuffer[0] > BeatThreshold)
+            {
+                DetectBeat();
+            }
+
+            max /= 3;
+
+            BeatThreshold += (max - BeatThreshold) * (GetAveragePastDiff(0, (EnergyBuffLen - AvgWindowWidth) / 2) / 10000);
+        }
+
+        private float GetAveragePastEnergy(int index, int radius)
+        {
+            float avg = 0;
+
+            for (int j = 0; j <= radius; j++)
+            {
+                avg += energyBuffer[index + j];
+            }
+
+            return avg / radius;
+        }
+
+        private float GetAveragePastDiff(int start, int end)
+        {
+            float avg = 0;
+
+            for (int j = start; j < end; j++)
+            {
+                avg += localDiffBuffer[j];
+            }
+
+            return avg / (end - start);
+        }
+
+        private float GetPastDiff(int start)
+        {
+            float diff = 0;
+
+            for (int j = start; j < EnergyBuffLen - AvgWindowWidth - 1; j++)
+            {
+                diff += Math.Abs(localDiffBuffer[j] - localDiffBuffer[j + 1]);
+            }
+
+            return diff;
+        }
+
+        private void DetectBeat()
+        {
+            DateTime now = DateTime.Now;
+            double millis = now.Subtract(lastBeat).TotalMilliseconds;
+
+            if (millis > BeatMinSpacingMillis)
+            {
+                BeatDetected?.Invoke(this, null);
+
+                float bpm = (float)(60 / millis * 1000);
+
+                bpmBuffer.Add(bpm);
+
+                float avgBpm = 0;
+
+                for (int i = 0; i < bpmBuffer.Count; i++)
+                {
+                    avgBpm += bpmBuffer[i];
+                }
+
+                avgBpm /= bpmBuffer.Count;
+
+                BpmDetected?.Invoke(this, new BpmEventArgs(bpm, avgBpm));
+
+                lastBeat = now;
+            }
         }
     }
 }
